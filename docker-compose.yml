@@ -1,0 +1,42 @@
+# Postgres and Valkey for local development. The API itself runs from the repo
+# with Poetry (see scripts/up.sh and scripts/serve.sh).
+#
+#   docker compose up -d
+#
+# Settings come from .env (create it with ./scripts/init-env.sh); the defaults
+# below match the app's, so it also works without one.
+
+services:
+  postgres:
+    image: postgres:latest
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-admin}
+      POSTGRES_DB: ${POSTGRES_DB:-offerzen-db}
+    ports:
+      - "${POSTGRES_PORT:-5433}:5432"
+    volumes:
+      # Postgres 18+ keeps its data under /var/lib/postgresql (not .../data).
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  valkey:
+    image: valkey/valkey:latest
+    command: ["valkey-server", "--appendonly", "yes"]
+    ports:
+      - "${VALKEY_PORT:-6380}:6379"
+    volumes:
+      - valkeydata:/data
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  pgdata:
+  valkeydata:

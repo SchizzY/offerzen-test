@@ -1,0 +1,1049 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "OfferZen MRD API",
+    "description": "Small consumer API",
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/health": {
+      "get": {
+        "tags": [
+          "health"
+        ],
+        "summary": "Check API health",
+        "description": "200 when Postgres is up, even if Valkey is down (`degraded`): orders are still accepted then. 503 only when Postgres is down.",
+        "operationId": "getHealth",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Postgres is down",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orders": {
+      "get": {
+        "tags": [
+          "orders"
+        ],
+        "summary": "List orders",
+        "description": "Returns orders newest first, using cursor (keyset) pagination. Call without `cursor` for the first page, then pass the `next_cursor` from each response until it is null. Pages stay consistent while new orders arrive: nothing is skipped or repeated.",
+        "operationId": "listOrders",
+        "parameters": [
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "`next_cursor` from the previous page",
+              "title": "Cursor"
+            },
+            "description": "`next_cursor` from the previous page"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "description": "Page size, 1-100",
+              "default": 20,
+              "title": "Limit"
+            },
+            "description": "Page size, 1-100"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A page of orders and the cursor for the next page",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderPage"
+                },
+                "example": {
+                  "items": [
+                    {
+                      "order_ref": "ORD-1001",
+                      "customer_id": "c1",
+                      "items": [
+                        {
+                          "sku": "BAN-001",
+                          "qty": 2,
+                          "unit_price_cents": 2499,
+                          "line_total_cents": 4998
+                        },
+                        {
+                          "sku": "MLK-001",
+                          "qty": 1,
+                          "unit_price_cents": 3199,
+                          "line_total_cents": 3199
+                        }
+                      ],
+                      "id": 55,
+                      "total_cents": 8197,
+                      "status": "pending",
+                      "created_at": "2026-11-19T09:30:00Z",
+                      "updated_at": "2026-11-19T09:30:00Z"
+                    }
+                  ],
+                  "next_cursor": "eyJpZCI6NTV9"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The cursor is malformed",
+            "content": {
+              "application/json": {
+                "example": {
+                  "detail": "Invalid cursor"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "orders"
+        ],
+        "summary": "Create an order",
+        "description": "Accepts the order as `pending` and records an `order_accepted` event; it does not wait for stock. The stock worker then supplies what is available, charges only for that and sets the final status. `order_ref` must be unique, so change it before sending an example twice. Orders are still accepted while the Valkey cache is down; duplicates are then caught by Postgres.",
+        "operationId": "createOrder",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OrderCreate"
+              },
+              "examples": {
+                "basket": {
+                  "summary": "Everyday basket",
+                  "description": "All items in stock; the order is created as `pending`.",
+                  "value": {
+                    "order_ref": "ORD-1001",
+                    "customer_id": "c1",
+                    "items": [
+                      {
+                        "sku": "BAN-001",
+                        "qty": 2
+                      },
+                      {
+                        "sku": "MLK-001",
+                        "qty": 1
+                      },
+                      {
+                        "sku": "BRD-001",
+                        "qty": 1
+                      },
+                      {
+                        "sku": "EGG-001",
+                        "qty": 1
+                      }
+                    ]
+                  }
+                },
+                "single": {
+                  "summary": "Single item",
+                  "value": {
+                    "order_ref": "ORD-1002",
+                    "customer_id": "c2",
+                    "items": [
+                      {
+                        "sku": "COF-001",
+                        "qty": 1
+                      }
+                    ]
+                  }
+                },
+                "out_of_stock": {
+                  "summary": "Out-of-stock item",
+                  "description": "Basmati rice has no stock: the order is accepted, then the stock worker fulfils 0, charges 0 and marks it `unfulfilled`.",
+                  "value": {
+                    "order_ref": "ORD-1003",
+                    "customer_id": "c1",
+                    "items": [
+                      {
+                        "sku": "RCE-001",
+                        "qty": 2
+                      }
+                    ]
+                  }
+                },
+                "unknown_sku": {
+                  "summary": "Unknown SKU (422)",
+                  "value": {
+                    "order_ref": "ORD-1004",
+                    "customer_id": "c1",
+                    "items": [
+                      {
+                        "sku": "NOPE-001",
+                        "qty": 1
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The created order",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Order"
+                },
+                "example": {
+                  "order_ref": "ORD-1001",
+                  "customer_id": "c1",
+                  "items": [
+                    {
+                      "sku": "BAN-001",
+                      "qty": 2,
+                      "unit_price_cents": 2499,
+                      "line_total_cents": 4998
+                    },
+                    {
+                      "sku": "MLK-001",
+                      "qty": 1,
+                      "unit_price_cents": 3199,
+                      "line_total_cents": 3199
+                    }
+                  ],
+                  "id": 55,
+                  "total_cents": 8197,
+                  "status": "pending",
+                  "created_at": "2026-11-19T09:30:00Z",
+                  "updated_at": "2026-11-19T09:30:00Z"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "An order with this order_ref already exists",
+            "content": {
+              "application/json": {
+                "example": {
+                  "detail": "Order 'ORD-1001' already exists"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid body or unknown SKU(s)"
+          }
+        }
+      }
+    },
+    "/orders/{order_id}": {
+      "get": {
+        "tags": [
+          "orders"
+        ],
+        "summary": "Get an order",
+        "description": "Returns the full order: reference, customer, line items and status.",
+        "operationId": "getOrder",
+        "parameters": [
+          {
+            "name": "order_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Order Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The order",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Order"
+                },
+                "example": {
+                  "order_ref": "ORD-1001",
+                  "customer_id": "c1",
+                  "items": [
+                    {
+                      "sku": "BAN-001",
+                      "qty": 2,
+                      "unit_price_cents": 2499,
+                      "line_total_cents": 4998
+                    },
+                    {
+                      "sku": "MLK-001",
+                      "qty": 1,
+                      "unit_price_cents": 3199,
+                      "line_total_cents": 3199
+                    }
+                  ],
+                  "id": 55,
+                  "total_cents": 8197,
+                  "status": "pending",
+                  "created_at": "2026-11-19T09:30:00Z",
+                  "updated_at": "2026-11-19T09:30:00Z"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Order not found",
+            "content": {
+              "application/json": {
+                "example": {
+                  "detail": "Order 999 not found"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orders/{order_id}/status": {
+      "get": {
+        "tags": [
+          "orders"
+        ],
+        "summary": "Get an order's status",
+        "operationId": "getOrderStatus",
+        "parameters": [
+          {
+            "name": "order_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Order Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The order id and its current status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderStatus"
+                },
+                "example": {
+                  "id": 55,
+                  "status": "pending",
+                  "updated_at": "2026-11-19T09:30:00Z"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Order not found",
+            "content": {
+              "application/json": {
+                "example": {
+                  "detail": "Order 999 not found"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/products/{sku}/stock": {
+      "get": {
+        "tags": [
+          "products"
+        ],
+        "summary": "Get current stock for a SKU",
+        "description": "Current units on the shelf, read straight from Postgres. Stock is reduced by the stock worker after an order is accepted, so `pending` orders are not reflected until the worker processes them.",
+        "operationId": "getProductStock",
+        "parameters": [
+          {
+            "name": "sku",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Sku"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The product's current stock",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProductStock"
+                },
+                "example": {
+                  "sku": "BAN-001",
+                  "name": "Bananas (1kg)",
+                  "stock": 118,
+                  "updated_at": "2026-11-19T09:30:00Z"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No product with this SKU",
+            "content": {
+              "application/json": {
+                "example": {
+                  "detail": "Product 'NOPE-001' not found"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/events/stream": {
+      "get": {
+        "tags": [
+          "events"
+        ],
+        "summary": "Stream order events (Server-Sent Events)",
+        "description": "An append-only feed of order events, in order, as Server-Sent Events.\n\n- `order_accepted`: an order was accepted (what was ordered, at what price).\n- `order_fulfilled`: the stock worker processed it (what was supplied and charged).\n\nReplays every event after `after` (default: from the start), then stays open and sends new events as they happen. Each event's `id` is its log position: reconnect with the `Last-Event-ID` header (browsers do this automatically) or `?after=<id>` to resume without gaps. Delivery is at-least-once, so ignore ids you have already processed.\n\nTry it: `curl -N localhost:8000/events/stream`",
+        "operationId": "streamOrderEvents",
+        "parameters": [
+          {
+            "name": "after",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Replay events after this id (0 = everything)",
+              "default": 0,
+              "title": "After"
+            },
+            "description": "Replay events after this id (0 = everything)"
+          },
+          {
+            "name": "Last-Event-ID",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Sent by SSE clients on reconnect",
+              "title": "Last-Event-Id"
+            },
+            "description": "Sent by SSE clients on reconnect"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "text/event-stream": {
+                "example": "id: 17\nevent: order_accepted\ndata: {\"id\":17,\"type\":\"order_accepted\",\"order_id\":9,\"payload\":{\"order_id\":9,\"order_ref\":\"ORD-1001\",\"customer_id\":\"c1\",\"items\":[{\"sku\":\"BAN-001\",\"qty\":2,\"unit_price_cents\":2499,\"line_total_cents\":4998}],\"total_cents\":4998},\"created_at\":\"2026-11-19T09:30:00Z\"}\n\nid: 18\nevent: order_fulfilled\ndata: {\"id\":18,\"type\":\"order_fulfilled\",\"order_id\":9,\"payload\":{\"order_id\":9,\"order_ref\":\"ORD-1001\",\"status\":\"confirmed\",\"items\":[{\"sku\":\"BAN-001\",\"qty\":2,\"fulfilled_qty\":2,\"unit_price_cents\":2499,\"line_total_cents\":4998}],\"total_cents\":4998},\"created_at\":\"2026-11-19T09:30:00Z\"}\n\n",
+                "schema": {
+                  "type": "string",
+                  "description": "Server-Sent Events; each event's `data` is an [OrderEventOut](#/components/schemas/OrderEventOut) as JSON"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "ErrorResponse": {
+        "properties": {
+          "detail": {
+            "type": "string",
+            "title": "Detail",
+            "description": "What went wrong",
+            "examples": [
+              "Order 999 not found"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "detail"
+        ],
+        "title": "ErrorResponse"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "HealthResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "degraded",
+              "down"
+            ],
+            "title": "Status",
+            "description": "ok: all up. degraded: Valkey down, orders still accepted. down: Postgres down"
+          },
+          "database": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "down"
+            ],
+            "title": "Database",
+            "description": "Postgres connectivity"
+          },
+          "valkey": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "down"
+            ],
+            "title": "Valkey",
+            "description": "Valkey cache connectivity"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status",
+          "database",
+          "valkey"
+        ],
+        "title": "HealthResponse"
+      },
+      "Order": {
+        "properties": {
+          "order_ref": {
+            "type": "string",
+            "title": "Order Ref",
+            "description": "Client-supplied unique reference; reusing one returns 409",
+            "examples": [
+              "ORD-1001"
+            ]
+          },
+          "customer_id": {
+            "type": "string",
+            "title": "Customer Id",
+            "description": "Customer placing the order",
+            "examples": [
+              "c1"
+            ]
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/OrderLine"
+            },
+            "type": "array",
+            "title": "Items",
+            "description": "Line items with the prices charged"
+          },
+          "id": {
+            "type": "integer",
+            "title": "Id",
+            "description": "Server-assigned order id",
+            "examples": [
+              55
+            ]
+          },
+          "total_cents": {
+            "type": "integer",
+            "title": "Total Cents",
+            "description": "Sum of line totals at the prices when the order was placed. Drops if lines can't be fully fulfilled: only what is supplied is charged",
+            "examples": [
+              8197
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "confirmed",
+              "partially_fulfilled",
+              "unfulfilled"
+            ],
+            "title": "Status",
+            "description": "`pending` until the stock worker processes it, then `confirmed` (all supplied), `partially_fulfilled` or `unfulfilled` (nothing supplied)",
+            "default": "pending"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At",
+            "description": "When the order was accepted"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At",
+            "description": "Last change to the order"
+          }
+        },
+        "type": "object",
+        "required": [
+          "order_ref",
+          "customer_id",
+          "items",
+          "id",
+          "total_cents",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "Order"
+      },
+      "OrderCreate": {
+        "properties": {
+          "order_ref": {
+            "type": "string",
+            "title": "Order Ref",
+            "description": "Client-supplied unique reference; reusing one returns 409",
+            "examples": [
+              "ORD-1001"
+            ]
+          },
+          "customer_id": {
+            "type": "string",
+            "title": "Customer Id",
+            "description": "Customer placing the order",
+            "examples": [
+              "c1"
+            ]
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/OrderItem"
+            },
+            "type": "array",
+            "title": "Items",
+            "description": "Line items; repeated SKUs are summed",
+            "default": []
+          }
+        },
+        "type": "object",
+        "required": [
+          "order_ref",
+          "customer_id"
+        ],
+        "title": "OrderCreate"
+      },
+      "OrderItem": {
+        "properties": {
+          "sku": {
+            "type": "string",
+            "title": "Sku",
+            "description": "Product SKU",
+            "examples": [
+              "BAN-001"
+            ]
+          },
+          "qty": {
+            "type": "integer",
+            "exclusiveMinimum": 0.0,
+            "title": "Qty",
+            "description": "Quantity to order, at least 1",
+            "examples": [
+              2
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "sku",
+          "qty"
+        ],
+        "title": "OrderItem"
+      },
+      "OrderLine": {
+        "properties": {
+          "sku": {
+            "type": "string",
+            "title": "Sku",
+            "description": "Product SKU",
+            "examples": [
+              "BAN-001"
+            ]
+          },
+          "qty": {
+            "type": "integer",
+            "exclusiveMinimum": 0.0,
+            "title": "Qty",
+            "description": "Quantity to order, at least 1",
+            "examples": [
+              2
+            ]
+          },
+          "unit_price_cents": {
+            "type": "integer",
+            "title": "Unit Price Cents",
+            "description": "Product price when the order was placed",
+            "examples": [
+              2499
+            ]
+          },
+          "fulfilled_qty": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fulfilled Qty",
+            "description": "Units actually supplied; null until the stock worker processes the order",
+            "examples": [
+              2
+            ]
+          },
+          "line_total_cents": {
+            "type": "integer",
+            "title": "Line Total Cents",
+            "description": "unit_price_cents x qty while pending, then x fulfilled_qty",
+            "examples": [
+              4998
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "sku",
+          "qty",
+          "unit_price_cents",
+          "line_total_cents"
+        ],
+        "title": "OrderLine"
+      },
+      "OrderPage": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/Order"
+            },
+            "type": "array",
+            "title": "Items",
+            "description": "Orders on this page, newest first"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor",
+            "description": "Pass as `cursor` to get the next page; null on the last page",
+            "examples": [
+              "eyJpZCI6NTZ9"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "title": "OrderPage"
+      },
+      "OrderStatus": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id",
+            "description": "Order id",
+            "examples": [
+              55
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "confirmed",
+              "partially_fulfilled",
+              "unfulfilled"
+            ],
+            "title": "Status",
+            "description": "Current order status",
+            "examples": [
+              "pending"
+            ]
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At",
+            "description": "When the status (or order) last changed"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "status",
+          "updated_at"
+        ],
+        "title": "OrderStatus"
+      },
+      "ProductStock": {
+        "properties": {
+          "sku": {
+            "type": "string",
+            "title": "Sku",
+            "description": "Product SKU",
+            "examples": [
+              "BAN-001"
+            ]
+          },
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "Product name",
+            "examples": [
+              "Bananas (1kg)"
+            ]
+          },
+          "stock": {
+            "type": "integer",
+            "title": "Stock",
+            "description": "Units on the shelf now; never negative. Orders still `pending` aren't deducted yet",
+            "examples": [
+              118
+            ]
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At",
+            "description": "Last change to the product, including stock"
+          }
+        },
+        "type": "object",
+        "required": [
+          "sku",
+          "name",
+          "stock",
+          "updated_at"
+        ],
+        "title": "ProductStock"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      },
+      "OrderEventOut": {
+        "properties": {
+          "id": {
+            "description": "Position in the log; resume with Last-Event-ID / after",
+            "examples": [
+              17
+            ],
+            "title": "Id",
+            "type": "integer"
+          },
+          "type": {
+            "description": "`order_accepted`: what was ordered. `order_fulfilled`: what was supplied and charged",
+            "enum": [
+              "order_accepted",
+              "order_fulfilled"
+            ],
+            "title": "Type",
+            "type": "string"
+          },
+          "order_id": {
+            "examples": [
+              9
+            ],
+            "title": "Order Id",
+            "type": "integer"
+          },
+          "payload": {
+            "additionalProperties": true,
+            "description": "The order as it was at this event",
+            "title": "Payload",
+            "type": "object"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "order_id",
+          "payload",
+          "created_at"
+        ],
+        "title": "OrderEventOut",
+        "type": "object"
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "orders",
+      "description": "Create orders and check their status"
+    },
+    {
+      "name": "products",
+      "description": "Product stock levels"
+    },
+    {
+      "name": "events",
+      "description": "Order event feed for other systems (Server-Sent Events)"
+    },
+    {
+      "name": "health",
+      "description": "Service and dependency health"
+    }
+  ]
+}

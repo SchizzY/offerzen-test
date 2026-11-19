@@ -1,0 +1,7 @@
+.order_consumer_cursor
+.order_consumer_cursor.tmp
+__pycache__/
+.pytest_cache/
+.env
+.env.bak
+.vscode/
