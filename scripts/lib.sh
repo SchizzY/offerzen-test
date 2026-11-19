@@ -50,7 +50,9 @@ require_tools() {
 
 health() { curl -s "${API_URL}/health" || echo '{"status":"unreachable"}'; }
 
-port_open() { nc -z localhost "$1" >/dev/null 2>&1; }
+# Is something accepting connections on this local port? Uses bash's built-in
+# /dev/tcp, so no netcat is needed.
+port_open() { (exec 3<>"/dev/tcp/127.0.0.1/$1") >/dev/null 2>&1; }
 
 # Name of the running Docker container publishing a host port (empty if none).
 # Works for compose containers and hand-made ones alike.
