@@ -25,3 +25,12 @@ build-backend = "poetry.core.masonry.api"
 [tool.poetry]
 package-mode = false
 
+[dependency-groups]
+dev = [
+    "pytest (>=9,<10)",
+    "httpx2 (>=2.16.2,<3.0.0)"
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"

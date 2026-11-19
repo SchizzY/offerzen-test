@@ -6,6 +6,8 @@ from contextlib import asynccontextmanager
 from valkey.asyncio import Valkey
 from valkey.exceptions import ValkeyError
 
+from app.env import valkey_url
+
 __all__ = [
     "Valkey",
     "ValkeyError",
@@ -18,9 +20,7 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 
-VALKEY_URL = os.getenv("VALKEY_URL") or (
-    f"valkey://{os.getenv('VALKEY_HOST', 'localhost')}:{os.getenv('VALKEY_PORT', 6380)}/0"
-)
+VALKEY_URL = valkey_url()
 
 # Short, so a hung Valkey fails over to Postgres quickly instead of stalling requests.
 CACHE_TIMEOUT = float(os.getenv("VALKEY_TIMEOUT", 1))

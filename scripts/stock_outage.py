@@ -112,7 +112,7 @@ def main() -> int:
 
     before = stock_levels()
     with SessionLocal() as session:
-        prices = {sku: round(price) for sku, price in session.execute(select(Product.sku, Product.price_cents))}
+        prices = dict(session.execute(select(Product.sku, Product.price_cents)).all())
     orders = build_orders(before)
     expected, deducted = replay(orders, before, prices)
 

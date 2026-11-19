@@ -13,7 +13,7 @@ class ProductResource:
     def get_by_sku(self, sku: str) -> Product | None:
         return self.session.scalar(select(Product).where(Product.sku == sku))
 
-    def prices(self, skus: set[str]) -> dict[str, float]:
+    def prices(self, skus: set[str]) -> dict[str, int]:
         rows = self.session.execute(
             select(Product.sku, Product.price_cents).where(Product.sku.in_(skus))
         )

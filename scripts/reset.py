@@ -57,11 +57,14 @@ async def delete_keys(keys: list[str]) -> int:
 def reset_database() -> tuple[int, int]:
     seed_skus = [p["sku"] for p in PRODUCTS]
     with SessionLocal() as session:
-        orders = session.scalar(select(func.count()).select_from(Order))
-        session.execute(text("TRUNCATE orders, order_events RESTART IDENTITY"))
+        # Lock the consumers' offsets FIRST: the stock worker locks its offset
+        # row and then reads orders/order_events, so taking the locks in the
+        # same order (rather than truncating first) can't deadlock with it.
         session.execute(
             text("UPDATE consumer_offsets SET last_event_id = 0, paused = false")
         )
+        orders = session.scalar(select(func.count()).select_from(Order))
+        session.execute(text("TRUNCATE orders, order_events RESTART IDENTITY"))
         removed = session.execute(
             delete(Product).where(Product.sku.not_in(seed_skus))
         ).rowcount
@@ -92,7 +95,7 @@ def describe() -> None:
             print(f"  {sku}: not in seed list, would be removed")
         else:
             changes = [
-                f"{field} {old:g} -> {target[key]:g}"
+                f"{field} {old} -> {target[key]}"
                 for field, key, old in (("stock", "stock", stock), ("price", "price_cents", price))
                 if old != target[key]
             ]

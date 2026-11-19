@@ -3,6 +3,7 @@ import binascii
 import json
 import logging
 import os
+from typing import Literal
 
 from fastapi import Depends, HTTPException, status
 from fastapi.concurrency import run_in_threadpool
@@ -24,6 +25,10 @@ if not 0 < PENDING_TTL < ORDER_CACHE_TTL:
     raise ValueError("ORDER_CACHE_TTL must be longer than ORDER_PENDING_TTL, both > 0")
 
 CacheDown = (ValkeyError, OSError)
+
+# Value of an order_ref claim in Valkey before the order is committed. Once
+# committed, the key holds the order's JSON instead.
+PENDING = "pending"
 
 
 def order_cache_key(order_ref: str) -> str:
@@ -65,10 +70,10 @@ class OrderController:
         return totals
 
     @staticmethod
-    def _price_lines(data: OrderCreate, prices: dict[str, float]) -> tuple[list[dict], int]:
+    def _price_lines(data: OrderCreate, prices: dict[str, int]) -> tuple[list[dict], int]:
         lines = []
         for item in data.items:
-            unit = round(prices[item.sku])
+            unit = prices[item.sku]
             lines.append(
                 {**item.model_dump(), "unit_price_cents": unit, "line_total_cents": unit * item.qty}
             )
@@ -77,19 +82,25 @@ class OrderController:
     async def create_order(self, data: OrderCreate) -> Order:
         """Valkey is checked first as a fast path; Postgres is the source of truth.
 
-        1. Claim order_ref in Valkey (SET NX). Taken -> 409 without touching the DB.
-           Valkey down -> skip the claim and carry on.
+        1. Claim order_ref in Valkey (SET NX). If Valkey already holds the
+           committed order -> 409 without touching the DB. If it only holds a
+           `pending` claim (another request in flight, or one that crashed before
+           committing), that is NOT proof the order exists: carry on and let
+           Postgres decide. Valkey down -> carry on too.
         2. Check Postgres for the ref. Found -> backfill Valkey, 409.
-        3. Insert the order and its order_accepted event. The unique constraint on order_ref settles any race that got
-           past 1 and 2 (e.g. while Valkey was down): the loser rolls back -> 409.
+        3. Insert the order and its order_accepted event. The unique constraint
+           on order_ref settles any race that got past 1 and 2: a concurrent
+           duplicate waits for the first insert, then gets 409 if it committed,
+           or succeeds if it rolled back.
         4. Commit, wake the stock worker, then write the order to Valkey. A failed
            cache write is logged and left to the sync loop; it never fails the order.
         """
         key = order_cache_key(data.order_ref)
 
-        claimed = await self._claim(key)
-        if claimed is False:
+        claim = await self._claim(key)
+        if claim == "exists":
             raise self._already_exists(data.order_ref)
+        claimed = claim == "claimed"
 
         try:
             existing = await run_in_threadpool(self.resource.get_by_ref, data.order_ref)
@@ -155,15 +166,22 @@ class OrderController:
         except CacheDown:
             logger.warning("Could not cache order %s", order.order_ref)
 
-    async def _claim(self, key: str) -> bool | None:
-        """True = claimed, False = already taken, None = Valkey down (fall back to DB)."""
+    async def _claim(self, key: str) -> Literal["claimed", "exists", "unclaimed"]:
+        """claimed: we hold the key. exists: Valkey has the committed order (a
+        real duplicate). unclaimed: someone else's `pending` claim, or Valkey is
+        down; neither proves the order exists, so Postgres decides."""
         try:
-            return bool(await self.cache.set(key, "pending", nx=True, ex=PENDING_TTL))
+            if await self.cache.set(key, PENDING, nx=True, ex=PENDING_TTL):
+                return "claimed"
+            value = await self.cache.get(key)
         except CacheDown:
             logger.warning("Valkey down; deduplicating %s against Postgres only", key)
-            return None
+            return "unclaimed"
+        if value is not None and value != PENDING:
+            return "exists"
+        return "unclaimed"
 
-    async def _release(self, key: str, claimed: bool | None) -> None:
+    async def _release(self, key: str, claimed: bool) -> None:
         if not claimed:
             return
         try:
