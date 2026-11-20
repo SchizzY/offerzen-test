@@ -78,66 +78,13 @@ poetry run python -m scripts.stock_worker pause    # or: resume, status
 
 ## Design
 
-```mermaid
-flowchart LR
-    Client -->|POST /orders| API[Orders API]
-    API -->|1. claim order_ref| Valkey[(Valkey)]
-    API -->|"2. order + order_accepted (one transaction)"| PG[(PostgreSQL<br/>orders · order_events)]
-    Worker[Stock worker] -->|reads events after its offset| PG
-    Worker -->|"stock, status, order_fulfilled (one transaction)"| PG
-    PG -->|"GET /events/stream (SSE)"| Consumers[Other systems<br/>e.g. scripts/consume.sh]
-```
+Intake only records the order and an `order_accepted` event, in one Postgres
+transaction. A background worker applies stock from that event log, and other
+systems stream the same log over SSE. Postgres is the source of truth; Valkey is
+a fast first check for duplicates.
 
-- **Postgres is the source of truth; Valkey is a fast first check.** A
-  duplicate whose order is already cached is rejected without touching the
-  database. Anything else, including Valkey being down, falls through to
-  Postgres's unique constraint on `order_ref`, which settles races correctly.
-- **Outbox instead of doing stock work inline.** Intake writes the order and an
-  `order_accepted` event in one transaction and returns `201`, so orders are
-  never lost or rejected because stock is unavailable.
-- **One event log, several consumers (the Kafka model on Postgres).** The stock
-  worker and external systems read the same `order_events` log, each tracking
-  its own position.
-- **Exactly-once stock.** The worker deducts stock, records what was supplied,
-  appends `order_fulfilled` and advances its offset in one transaction, so a
-  crash means a retry, never a double deduction.
-- **Partial fulfilment, not backorders.** Groceries can't be backordered. Each
-  line gets `min(requested, available)`, the customer is charged only for what
-  was supplied, and stock never goes negative. The order ends `confirmed`,
-  `partially_fulfilled` or `unfulfilled`.
-- **Prices fixed at order time.** Unit prices are copied onto each line when the
-  order is accepted, so later price changes don't affect it.
-- **SSE for the feed.** It's plain HTTP (`curl -N` works), and clients resume
-  with `Last-Event-ID` after a disconnect, so a consumer that was offline
-  doesn't miss anything.
-
-## Trade-offs and limits
-
-- **Event appends are serialised.** Event ids are assigned at insert but become
-  visible at commit, so without care a reader could skip an event that commits
-  late. Writers take a short Postgres lock from the event insert until commit,
-  so ids become visible in order. That caps event-writing throughput; in
-  production a change-data-capture tool (e.g. Debezium) would provide commit
-  order without the lock.
-- **At-least-once delivery.** Consumers should ignore event ids they've already
-  processed (the example consumer does).
-- **Instant wake-ups are per process.** The worker and SSE streams are woken
-  in-process when an event is written. With several API instances, others pick
-  it up on their next poll (about a second).
-- **The event log is kept forever.** Any consumer can replay from the start.
-  Retention would be the next thing to add.
-- **Open streams are closed on shutdown.** `serve.sh` gives them three seconds,
-  and SSE clients reconnect and resume.
-- **The Valkey fallback isn't demonstrated.** Orders keep working (and
-  duplicates are still caught) when Valkey is down, but that isn't presented as
-  a third unhappy path, since the brief asks for exactly two.
-
-## Out of scope, on purpose
-
-Authentication, product management, substitutions, and payments. For payments,
-the natural fit is to reserve the requested total at intake and capture only
-what was fulfilled. Input validation (unknown SKUs, bad pagination cursors)
-returns sensible errors but isn't demonstrated.
+The design, the alternatives I considered, the bugs found along the way, and the
+trade-offs and limits are in **[SOLUTION.md](SOLUTION.md)**.
 
 ## API
 
@@ -211,6 +158,7 @@ This project was built with the help of an AI coding assistant (Claude, via
 Claude Code). I directed the work, made the product and design decisions, and
 reviewed and tested the results. The assistant wrote most of the code, tests,
 scripts and documentation to that direction, and flagged issues along the way.
+Every prompt I gave it is in [PROMPTS.md](PROMPTS.md).
 
 Decisions I made include:
 - Postgres as the source of truth, with Valkey as a fast first check
