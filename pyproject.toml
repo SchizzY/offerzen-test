@@ -3,7 +3,7 @@ name = "offerzen-mrd-api"
 version = "0.1.0"
 description = "Small consumer API"
 authors = [
-    {name = "Cahil Henry - Leyte",email = "cahil712@gmail.com"}
+    {name = "Cahil Henry - Leyte"}
 ]
 readme = "README.md"
 requires-python = ">=3.12"
