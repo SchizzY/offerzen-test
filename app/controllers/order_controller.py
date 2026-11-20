@@ -63,13 +63,6 @@ class OrderController:
         self.cache = cache
 
     @staticmethod
-    def _quantities(data: OrderCreate) -> dict[str, int]:
-        totals: dict[str, int] = {}
-        for item in data.items:
-            totals[item.sku] = totals.get(item.sku, 0) + item.qty
-        return totals
-
-    @staticmethod
     def _price_lines(data: OrderCreate, prices: dict[str, int]) -> tuple[list[dict], int]:
         lines = []
         for item in data.items:
@@ -107,15 +100,15 @@ class OrderController:
             if existing is not None:
                 await self._try_cache(Order.model_validate(existing), ORDER_CACHE_TTL)
                 raise self._already_exists(data.order_ref)
-            quantities = self._quantities(data)
-            prices = await run_in_threadpool(self.products.prices, set(quantities))
-            unknown = sorted(set(quantities) - set(prices))
-            if unknown:
+            skus = {item.sku for item in data.items}
+            prices = await run_in_threadpool(self.products.prices, skus)
+            unknown_skus = sorted(skus - set(prices))
+            if unknown_skus:
                 await run_in_threadpool(self.resource.rollback)
                 await self._release(key, claimed)
                 raise HTTPException(
                     status.HTTP_422_UNPROCESSABLE_CONTENT,
-                    f"Unknown SKU(s): {', '.join(unknown)}",
+                    f"Unknown SKU(s): {', '.join(unknown_skus)}",
                 )
             lines, total_cents = self._price_lines(data, prices)
             # Order + order_accepted event in one transaction. Stock is NOT touched

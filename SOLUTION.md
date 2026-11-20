@@ -219,6 +219,10 @@ edge cases (such as Valkey being down) handled but not showcased.
   the unique constraint decides.
 - **Open streams are closed on shutdown.** The server gives them three seconds,
   then clients reconnect and resume.
+- **Shell scripts rather than a Makefile.** A Makefile could have wrapped most of
+  the setup, simulation and test commands. I left the tooling until near the end
+  and went with plain `.sh` scripts because they were quicker to write and print
+  their results in the terminal.
 
 ## 8. Out of scope, on purpose
 
